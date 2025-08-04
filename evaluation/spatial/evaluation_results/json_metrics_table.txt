@@ -1,0 +1,24 @@
+JSON-BASED SEGMENTATION EVALUATION METRICS
+==================================================
+
+JSON Annotations: annotations_30.ordered.json
+Prediction: evaluation/spatial/h5 files/RPM_7_lab_pred.h5
+Overall Accuracy: 96.46%
+Optimal Mapping: (3, 2, 1, 0)
+
+Mapping: Prediction Class -> Ground Truth Class
+  BG (Dark Gray) -> R (White)
+  L (Medium Gray) -> PM (Light Gray)
+  PM (Light Gray) -> L (Medium Gray)
+  R (White) -> BG (Dark Gray)
+
+=== METRICS BEFORE CLUSTER FILTERING ===
+------------------------------------------------------------------------------------------
+Class           Precision  Recall     F1-Score   IoU        Accuracy   Pixels    
+------------------------------------------------------------------------------------------
+BG (Dark Gray)  0.999      0.977      0.988      0.977      0.991      4,242,995 
+L (Medium Gray) 0.945      0.997      0.970      0.942      0.965      6,767,514 
+PM (Light Gray) 0.777      0.207      0.327      0.196      0.984      54,938    
+R (White)       0.894      0.346      0.499      0.333      0.989      67,823    
+------------------------------------------------------------------------------------------
+OVERALL         0.965      0.982      0.971      0.948      0.965      11,133,270
