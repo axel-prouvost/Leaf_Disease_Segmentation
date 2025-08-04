@@ -58,13 +58,24 @@ def calculate_rust_metrics(df):
     total_pred_leaf = df['surfPred_leaf'].sum()
     total_gt_leaf = df['surfGT_leaf'].sum()
     
-    # Precision: surface GT rust / surface prédite rust
-    precision = total_gt_rust / total_pred_rust if total_pred_rust > 0 else 0
+    # Calculer l'intersection pour chaque échantillon
+    intersection = np.minimum(df['surfPred_rust'], df['surfGT_rust'])
+    total_intersection = intersection.sum()
     
-    # Accuracy: proportion de pixels correctement classifiés
-    # Nous utilisons l'IoU comme proxy pour l'accuracy car nous n'avons pas les vrais/faux positifs/négatifs
-    # L'IoU est une bonne mesure de la précision de segmentation
-    accuracy = df['IoU_rust'].mean()
+    # Precision: intersection / surface prédite totale
+    precision = total_intersection / total_pred_rust if total_pred_rust > 0 else 0
+    
+    # Accuracy: (Vrais Positifs + Vrais Négatifs) / Total
+    # Vrais Positifs = intersection (surface correctement prédite comme malade)
+    # Vrais Négatifs = surface saine correctement prédite
+    vrais_positifs = intersection
+    vrais_negatifs = df['surfGT_leaf'] - df['surfGT_rust'] - (df['surfPred_rust'] - intersection)
+    vrais_negatifs = np.maximum(vrais_negatifs, 0)  # Éviter les valeurs négatives
+    
+    # Accuracy globale
+    total_pixels = df['surfGT_leaf'].sum()
+    total_correct = vrais_positifs.sum() + vrais_negatifs.sum()
+    accuracy = total_correct / total_pixels if total_pixels > 0 else 0
     
     # F1-Score
     f1 = 2 * (precision * accuracy) / (precision + accuracy) if (precision + accuracy) > 0 else 0
@@ -84,13 +95,24 @@ def calculate_pm_metrics(df):
     total_pred_leaf = df['surfPred_leaf'].sum()
     total_gt_leaf = df['surfGT_leaf'].sum()
     
-    # Precision: surface GT PM / surface prédite PM
-    precision = total_gt_pm / total_pred_pm if total_pred_pm > 0 else 0
+    # Calculer l'intersection pour chaque échantillon
+    intersection = np.minimum(df['surfPred_PM'], df['surfGT_PM'])
+    total_intersection = intersection.sum()
     
-    # Accuracy: proportion de pixels correctement classifiés
-    # Nous utilisons l'IoU comme proxy pour l'accuracy car nous n'avons pas les vrais/faux positifs/négatifs
-    # L'IoU est une bonne mesure de la précision de segmentation
-    accuracy = df['IoU_PM'].mean()
+    # Precision: intersection / surface prédite totale
+    precision = total_intersection / total_pred_pm if total_pred_pm > 0 else 0
+    
+    # Accuracy: (Vrais Positifs + Vrais Négatifs) / Total
+    # Vrais Positifs = intersection (surface correctement prédite comme malade)
+    # Vrais Négatifs = surface saine correctement prédite
+    vrais_positifs = intersection
+    vrais_negatifs = df['surfGT_leaf'] - df['surfGT_PM'] - (df['surfPred_PM'] - intersection)
+    vrais_negatifs = np.maximum(vrais_negatifs, 0)  # Éviter les valeurs négatives
+    
+    # Accuracy globale
+    total_pixels = df['surfGT_leaf'].sum()
+    total_correct = vrais_positifs.sum() + vrais_negatifs.sum()
+    accuracy = total_correct / total_pixels if total_pixels > 0 else 0
     
     # F1-Score
     f1 = 2 * (precision * accuracy) / (precision + accuracy) if (precision + accuracy) > 0 else 0
