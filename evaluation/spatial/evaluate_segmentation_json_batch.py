@@ -36,17 +36,35 @@ def process_h5_folder(json_path, h5_folder_path, output_dir="batch_evaluation_re
     with open(json_path, 'r') as f:
         json_data = json.load(f)
     
-    # Find all H5 files in the folder
+    # Find all H5 files in the folder and check for corresponding JSON annotations
     h5_files = []
+    skipped_files = []
+    
     for file in os.listdir(h5_folder_path):
         if file.endswith('.h5'):
-            h5_files.append(os.path.join(h5_folder_path, file))
+            h5_path = os.path.join(h5_folder_path, file)
+            h5_filename = os.path.basename(file)
+            
+            # Check if there's a corresponding JSON annotation
+            annotation_data = find_matching_annotation(json_data, h5_filename)
+            if annotation_data is not None:
+                h5_files.append(h5_path)
+            else:
+                skipped_files.append(h5_filename)
     
     if not h5_files:
-        print(f"Error: No H5 files found in {h5_folder_path}")
+        print(f"Error: No H5 files found with corresponding JSON annotations in {h5_folder_path}")
+        if skipped_files:
+            print(f"Skipped {len(skipped_files)} H5 files without JSON annotations:")
+            for skipped in skipped_files:
+                print(f"  - {skipped}")
         return
     
-    print(f"Found {len(h5_files)} H5 files to process")
+    print(f"Found {len(h5_files)} H5 files with corresponding JSON annotations to process")
+    if skipped_files:
+        print(f"Skipped {len(skipped_files)} H5 files without JSON annotations:")
+        for skipped in skipped_files:
+            print(f"  - {skipped}")
     if min_cluster_size > 0:
         print(f"Cluster filtering enabled: minimum size {min_cluster_size}")
     
@@ -87,274 +105,288 @@ def process_h5_folder(json_path, h5_folder_path, output_dir="batch_evaluation_re
         create_batch_summary(results, output_dir, min_cluster_size)
 
 def process_single_h5_file(json_data, h5_path, output_dir, generate_chart=True, min_cluster_size=0):
-    """Process a single H5 file and return results."""
-    
+    """Process a single H5 file and return results with before/after filtering metrics and GT pixel counts."""
     try:
-        # Find matching annotation
-        h5_filename = os.path.basename(h5_path)
-        annotation_data = find_matching_annotation(json_data, h5_filename)
-        
-        if annotation_data is None:
-            print(f"  ⚠️  No matching annotation found for {h5_filename}")
-            return None
-        
-        # Import required modules for processing
         import h5py
         import numpy as np
         import matplotlib.pyplot as plt
         import cv2
-        
-        # Load the H5 probabilities
+
+        h5_filename = os.path.basename(h5_path)
+        annotation_data = find_matching_annotation(json_data, h5_filename)
+        # This check is redundant since we already filtered files above, but keeping for safety
+        if annotation_data is None:
+            print(f"  ⚠️  No matching annotation found for {h5_filename}")
+            return None
+
         with h5py.File(h5_path, 'r') as f:
             probabilities = f['exported_data'][:]
-        
         height, width, num_classes = probabilities.shape
-        
-        # Create ground truth mask from JSON
         gt_mask = create_mask_from_json(annotation_data, height, width)
-        
-        # Define colors and class names
-        class_colors = {
-            0: [63, 63, 63],     # Dark gray
-            1: [127, 127, 127],  # Medium gray
-            2: [191, 191, 191],  # Light gray
-            3: [255, 255, 255]   # White
-        }
-        
-        class_names = {
-            0: "BG (Dark Gray)",
-            1: "L (Medium Gray)", 
-            2: "PM (Light Gray)",
-            3: "R (White)"
-        }
-        
-        # Get prediction segmentation
-        max_class_indices = np.argmax(probabilities, axis=2)
-        
-        # Use fixed mapping (3, 2, 1, 0)
+        class_names = {0: "BG (Dark Gray)", 1: "L (Medium Gray)", 2: "PM (Light Gray)", 3: "R (White)"}
         best_mapping = (3, 2, 1, 0)
-        
-        # Apply the fixed mapping
+        max_class_indices = np.argmax(probabilities, axis=2)
         mapped_prediction = np.zeros_like(max_class_indices)
         for i, target_class in enumerate(best_mapping):
             mapped_prediction[max_class_indices == i] = target_class
-        
-        # Store original prediction for comparison
         original_mapped_prediction = mapped_prediction.copy()
-        
-        # Apply cluster size filtering if specified
-        if min_cluster_size > 0:
-            mapped_prediction = filter_small_clusters(mapped_prediction, min_cluster_size)
-        
-        # Calculate accuracy
-        mapped_accuracy = np.sum(mapped_prediction == gt_mask) / (height * width) * 100
-        original_accuracy = np.sum(original_mapped_prediction == gt_mask) / (height * width)
-        
-        # Calculate metrics for each class
-        all_metrics = {}
-        class_pixel_counts = [np.sum(original_mapped_prediction == i) for i in range(num_classes)]
-        total_pixels = sum(class_pixel_counts)
-        
+
+        # --- BEFORE FILTERING ---
+        before_metrics = {}
+        before_gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
         for i in range(num_classes):
             gt_mask_class = (gt_mask == i)
             pred_mask_class = (original_mapped_prediction == i)
-            metrics = calculate_metrics(gt_mask_class, pred_mask_class)
-            all_metrics[class_names[i]] = metrics
-        
-        # Calculate weighted overall metrics
-        overall_precision = np.average([metrics['precision'] for metrics in all_metrics.values()], weights=class_pixel_counts)
-        overall_recall = np.average([metrics['recall'] for metrics in all_metrics.values()], weights=class_pixel_counts)
-        overall_f1 = np.average([metrics['f1'] for metrics in all_metrics.values()], weights=class_pixel_counts)
-        overall_iou = np.average([metrics['iou'] for metrics in all_metrics.values()], weights=class_pixel_counts)
-        
-        # Create result dictionary
+            before_metrics[class_names[i]] = calculate_metrics(gt_mask_class, pred_mask_class)
+
+        # --- AFTER FILTERING ---
+        if min_cluster_size > 0:
+            filtered_prediction = filter_small_clusters(original_mapped_prediction, min_cluster_size)
+        else:
+            filtered_prediction = original_mapped_prediction.copy()
+        after_metrics = {}
+        after_gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
+        for i in range(num_classes):
+            gt_mask_class = (gt_mask == i)
+            pred_mask_class = (filtered_prediction == i)
+            after_metrics[class_names[i]] = calculate_metrics(gt_mask_class, pred_mask_class)
+
+        # Save both sets of metrics and GT pixel counts
         result = {
             'filename': os.path.basename(h5_path),
             'annotation_filename': annotation_data.get('filename', 'Unknown'),
-            'overall_accuracy': original_accuracy,
-            'overall_precision': overall_precision,
-            'overall_recall': overall_recall,
-            'overall_f1': overall_f1,
-            'overall_iou': overall_iou,
-            'total_pixels': total_pixels,
-            'class_metrics': all_metrics,
-            'class_pixel_counts': class_pixel_counts,
-            'height': height,
-            'width': width
+            'before': {
+                'class_metrics': before_metrics,
+                'gt_pixel_counts': before_gt_pixel_counts,
+                'height': height,
+                'width': width
+            },
+            'after': {
+                'class_metrics': after_metrics,
+                'gt_pixel_counts': after_gt_pixel_counts,
+                'height': height,
+                'width': width
+            },
+            'visualization_data': {
+                'gt_mask': gt_mask,
+                'pred_mask': filtered_prediction if min_cluster_size > 0 else original_mapped_prediction
+            }
         }
-        
-        # Save individual results
+        # Collect pixelwise predictions data
+        final_pred = filtered_prediction if min_cluster_size > 0 else original_mapped_prediction
+        rows, cols = np.indices(gt_mask.shape)
+        pixelwise_data = pd.DataFrame({
+            'filename': os.path.basename(h5_path),
+            'row': rows.flatten(),
+            'col': cols.flatten(),
+            'predicted_class': final_pred.flatten(),
+            'gt_class': gt_mask.flatten()
+        })
+        result['pixelwise_data'] = pixelwise_data
         save_individual_results(result, output_dir)
-        
         return result
-        
     except Exception as e:
         print(f"  ❌ Error processing {os.path.basename(h5_path)}: {e}")
         return None
 
 def save_individual_results(result, output_dir):
     """Save individual file results."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import cv2
     os.makedirs(output_dir, exist_ok=True)
     
     # Save metrics to file
     metrics_file = os.path.join(output_dir, 'metrics.txt')
     with open(metrics_file, 'w') as f:
         f.write(f"FILENAME: {result['filename']}\n")
-        f.write(f"ANNOTATION: {result['annotation_filename']}\n")
-        f.write(f"OVERALL ACCURACY: {result['overall_accuracy']:.3f}\n")
-        f.write(f"OVERALL PRECISION: {result['overall_precision']:.3f}\n")
-        f.write(f"OVERALL RECALL: {result['overall_recall']:.3f}\n")
-        f.write(f"OVERALL F1-SCORE: {result['overall_f1']:.3f}\n")
-        f.write(f"OVERALL IoU: {result['overall_iou']:.3f}\n")
-        f.write(f"TOTAL PIXELS: {result['total_pixels']:,}\n\n")
+        f.write(f"ANNOTATION: {result['annotation_filename']}\n\n")
         
-        f.write("PER-CLASS METRICS:\n")
-        f.write("-" * 80 + "\n")
-        for class_name, metrics in result['class_metrics'].items():
-            f.write(f"{class_name}:\n")
-            f.write(f"  Precision: {metrics['precision']:.3f}\n")
-            f.write(f"  Recall: {metrics['recall']:.3f}\n")
-            f.write(f"  F1-Score: {metrics['f1']:.3f}\n")
-            f.write(f"  IoU: {metrics['iou']:.3f}\n")
-            f.write(f"  Accuracy: {metrics['accuracy']:.3f}\n\n")
-
-def create_batch_summary(results, output_dir, min_cluster_size=0):
-    """Create a summary of all batch results."""
-    
-    # Create summary DataFrame
-    summary_data = []
-    for result in results:
-        summary_data.append({
-            'Filename': result['filename'],
-            'Annotation': result['annotation_filename'],
-            'Overall_Accuracy': result['overall_accuracy'],
-            'Overall_Precision': result['overall_precision'],
-            'Overall_Recall': result['overall_recall'],
-            'Overall_F1': result['overall_f1'],
-            'Overall_IoU': result['overall_iou'],
-            'Total_Pixels': result['total_pixels'],
-            'Height': result['height'],
-            'Width': result['width']
-        })
-    
-    df = pd.DataFrame(summary_data)
-    
-    # Calculate overall statistics
-    stats = {
-        'Total_Files': len(results),
-        'Mean_Accuracy': df['Overall_Accuracy'].mean(),
-        'Std_Accuracy': df['Overall_Accuracy'].std(),
-        'Mean_Precision': df['Overall_Precision'].mean(),
-        'Std_Precision': df['Overall_Precision'].std(),
-        'Mean_Recall': df['Overall_Recall'].mean(),
-        'Std_Recall': df['Overall_Recall'].std(),
-        'Mean_F1': df['Overall_F1'].mean(),
-        'Std_F1': df['Overall_F1'].std(),
-        'Mean_IoU': df['Overall_IoU'].mean(),
-        'Std_IoU': df['Overall_IoU'].std(),
-        'Total_Pixels_Processed': df['Total_Pixels'].sum()
-    }
-    
-    # Calculate per-class statistics with weighted averages
-    class_names = ["BG (Dark Gray)", "L (Medium Gray)", "PM (Light Gray)", "R (White)"]
-    class_stats = {}
-    
-    # Collect all metrics across all files and classes for overall weighted calculation
-    all_precision = []
-    all_recall = []
-    all_f1 = []
-    all_iou = []
-    all_accuracy = []
-    all_pixels = []
-    
-    for class_name in class_names:
-        class_metrics = {
-            'precision': [],
-            'recall': [],
-            'f1': [],
-            'iou': [],
-            'accuracy': [],
-            'pixels': []
-        }
-        
-        for result in results:
-            if class_name in result['class_metrics']:
-                metrics = result['class_metrics'][class_name]
-                class_metrics['precision'].append(metrics['precision'])
-                class_metrics['recall'].append(metrics['recall'])
-                class_metrics['f1'].append(metrics['f1'])
-                class_metrics['iou'].append(metrics['iou'])
-                class_metrics['accuracy'].append(metrics['accuracy'])
-                pixel_count = result['class_pixel_counts'][class_names.index(class_name)]
-                class_metrics['pixels'].append(pixel_count)
-                
-                # Add to overall collections for weighted calculation
-                all_precision.append(metrics['precision'])
-                all_recall.append(metrics['recall'])
-                all_f1.append(metrics['f1'])
-                all_iou.append(metrics['iou'])
-                all_accuracy.append(metrics['accuracy'])
-                all_pixels.append(pixel_count)
-        
-        if class_metrics['precision']:  # Only if we have data for this class
-            # Convert to numpy arrays for weighted calculations
-            precision_array = np.array(class_metrics['precision'])
-            recall_array = np.array(class_metrics['recall'])
-            f1_array = np.array(class_metrics['f1'])
-            iou_array = np.array(class_metrics['iou'])
-            accuracy_array = np.array(class_metrics['accuracy'])
-            pixels_array = np.array(class_metrics['pixels'])
-            
-            # Calculate weighted averages using pixel counts as weights
-            class_stats[class_name] = {
-                'mean_precision': np.average(precision_array, weights=pixels_array),
-                'std_precision': np.std(class_metrics['precision']),
-                'mean_recall': np.average(recall_array, weights=pixels_array),
-                'std_recall': np.std(class_metrics['recall']),
-                'mean_f1': np.average(f1_array, weights=pixels_array),
-                'std_f1': np.std(class_metrics['f1']),
-                'mean_iou': np.average(iou_array, weights=pixels_array),
-                'std_iou': np.std(class_metrics['iou']),
-                'mean_accuracy': np.average(accuracy_array, weights=pixels_array),
-                'std_accuracy': np.std(class_metrics['accuracy']),
-                'mean_pixels': np.mean(class_metrics['pixels']),
-                'std_pixels': np.std(class_metrics['pixels'])
-            }
-    
-    # Calculate overall weighted metrics across all classes
-    if all_pixels:
-        overall_weighted_stats = {
-            'weighted_precision': np.average(all_precision, weights=all_pixels),
-            'weighted_recall': np.average(all_recall, weights=all_pixels),
-            'weighted_f1': np.average(all_f1, weights=all_pixels),
-            'weighted_iou': np.average(all_iou, weights=all_pixels),
-            'weighted_accuracy': np.average(all_accuracy, weights=all_pixels)
-        }
-    else:
-        overall_weighted_stats = {
-            'weighted_precision': 0,
-            'weighted_recall': 0,
-            'weighted_f1': 0,
-            'weighted_iou': 0,
-            'weighted_accuracy': 0
-        }
-    
-    # Save summary
-    summary_file = os.path.join(output_dir, 'batch_summary.txt')
-    with open(summary_file, 'w') as f:
-        f.write("BATCH EVALUATION SUMMARY\n")
-        f.write("=" * 50 + "\n\n")
-        f.write(f"Total files processed: {stats['Total_Files']}\n")
-        f.write(f"Total pixels processed: {stats['Total_Pixels_Processed']:,}\n")
-        if min_cluster_size > 0:
-            f.write(f"Cluster filtering applied: minimum size {min_cluster_size}\n")
-        f.write("\n")
-        
-        f.write("PER-CLASS STATISTICS:\n")
+        # Before filtering metrics
+        f.write("BEFORE FILTERING:\n")
         f.write("-" * 120 + "\n")
         f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
         f.write("-" * 120 + "\n")
         
+        before_metrics = result['before']['class_metrics']
+        before_gt_pixels = result['before']['gt_pixel_counts']
+        total_before_pixels = sum(before_gt_pixels)
+        
+        # Calculate overall metrics for before filtering
+        overall_before = {
+            'precision': np.average([before_metrics[name]['precision'] for name in before_metrics.keys()], weights=before_gt_pixels),
+            'recall': np.average([before_metrics[name]['recall'] for name in before_metrics.keys()], weights=before_gt_pixels),
+            'f1': np.average([before_metrics[name]['f1'] for name in before_metrics.keys()], weights=before_gt_pixels),
+            'iou': np.average([before_metrics[name]['iou'] for name in before_metrics.keys()], weights=before_gt_pixels),
+            'accuracy': np.average([before_metrics[name]['accuracy'] for name in before_metrics.keys()], weights=before_gt_pixels)
+        }
+        
+        for class_name, metrics in before_metrics.items():
+            gt_pixel_count = before_gt_pixels[list(before_metrics.keys()).index(class_name)]
+            f.write(f"{class_name:<20} "
+                   f"{metrics['precision']:<8.3f}±0.000 "
+                   f"{metrics['recall']:<8.3f}±0.000 "
+                   f"{metrics['f1']:<8.3f}±0.000 "
+                   f"{metrics['iou']:<8.3f}±0.000 "
+                   f"{metrics['accuracy']:<8.3f}±0.000 "
+                   f"{gt_pixel_count:<8,}±0\n")
+        
+        f.write("-" * 120 + "\n")
+        f.write(f"{'OVERALL (Weighted)':<20} "
+               f"{overall_before['precision']:<8.3f}     "
+               f"{overall_before['recall']:<8.3f}     "
+               f"{overall_before['f1']:<8.3f}     "
+               f"{overall_before['iou']:<8.3f}     "
+               f"{overall_before['accuracy']:<8.3f}     "
+               f"{total_before_pixels:<8,}\n")
+        f.write("-" * 120 + "\n\n")
+        
+        # After filtering metrics (if filtering was applied)
+        if 'after' in result:
+            f.write("AFTER FILTERING:\n")
+            f.write("-" * 120 + "\n")
+            f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+            f.write("-" * 120 + "\n")
+            
+            after_metrics = result['after']['class_metrics']
+            after_gt_pixels = result['after']['gt_pixel_counts']
+            total_after_pixels = sum(after_gt_pixels)
+            
+            # Calculate overall metrics for after filtering
+            overall_after = {
+                'precision': np.average([after_metrics[name]['precision'] for name in after_metrics.keys()], weights=after_gt_pixels),
+                'recall': np.average([after_metrics[name]['recall'] for name in after_metrics.keys()], weights=after_gt_pixels),
+                'f1': np.average([after_metrics[name]['f1'] for name in after_metrics.keys()], weights=after_gt_pixels),
+                'iou': np.average([after_metrics[name]['iou'] for name in after_metrics.keys()], weights=after_gt_pixels),
+                'accuracy': np.average([after_metrics[name]['accuracy'] for name in after_metrics.keys()], weights=after_gt_pixels)
+            }
+            
+            for class_name, metrics in after_metrics.items():
+                gt_pixel_count = after_gt_pixels[list(after_metrics.keys()).index(class_name)]
+                f.write(f"{class_name:<20} "
+                       f"{metrics['precision']:<8.3f}±0.000 "
+                       f"{metrics['recall']:<8.3f}±0.000 "
+                       f"{metrics['f1']:<8.3f}±0.000 "
+                       f"{metrics['iou']:<8.3f}±0.000 "
+                       f"{metrics['accuracy']:<8.3f}±0.000 "
+                       f"{gt_pixel_count:<8,}±0\n")
+            
+            f.write("-" * 120 + "\n")
+            f.write(f"{'OVERALL (Weighted)':<20} "
+                   f"{overall_after['precision']:<8.3f}     "
+                   f"{overall_after['recall']:<8.3f}     "
+                   f"{overall_after['f1']:<8.3f}     "
+                   f"{overall_after['iou']:<8.3f}     "
+                   f"{overall_after['accuracy']:<8.3f}     "
+                   f"{total_after_pixels:<8,}\n")
+            f.write("-" * 120 + "\n\n")
+    
+    # Create visualization showing correct (white) and incorrect (red) predictions
+    # We need to get the prediction and ground truth masks from the processing
+    # Since we don't have them in the result dict, we'll need to modify the processing function
+    # For now, let's create a placeholder that will be filled by the processing function
+    if 'visualization_data' in result:
+        gt_mask = result['visualization_data']['gt_mask']
+        pred_mask = result['visualization_data']['pred_mask']
+        
+        # Create visualization
+        height, width = gt_mask.shape
+        visualization = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Correct predictions in white (255, 255, 255)
+        correct_mask = (gt_mask == pred_mask)
+        visualization[correct_mask] = [255, 255, 255]
+        
+        # Incorrect predictions in red (255, 0, 0)
+        incorrect_mask = (gt_mask != pred_mask)
+        visualization[incorrect_mask] = [255, 0, 0]
+        
+        # Save visualization
+        vis_file = os.path.join(output_dir, 'prediction_accuracy.png')
+        plt.figure(figsize=(12, 8))
+        plt.imshow(visualization)
+        plt.title(f'Prediction Accuracy: {result["filename"]}\nWhite = Correct, Red = Incorrect')
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(vis_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  📊 Visualization saved to: {vis_file}")
+
+def create_batch_summary(results, output_dir, min_cluster_size=0):
+    """Create a summary of all batch results with before/after filtering tables using GT pixel counts."""
+    import numpy as np
+    class_names = ["BG (Dark Gray)", "L (Medium Gray)", "PM (Light Gray)", "R (White)"]
+    def aggregate_table(results, key):
+        # key: 'before' or 'after'
+        per_class = {name: {'precision': [], 'recall': [], 'f1': [], 'iou': [], 'accuracy': [], 'pixels': []} for name in class_names}
+        for result in results:
+            metrics = result[key]['class_metrics']
+            gt_pixels = result[key]['gt_pixel_counts']
+            for i, name in enumerate(class_names):
+                per_class[name]['precision'].append(metrics[name]['precision'])
+                per_class[name]['recall'].append(metrics[name]['recall'])
+                per_class[name]['f1'].append(metrics[name]['f1'])
+                per_class[name]['iou'].append(metrics[name]['iou'])
+                per_class[name]['accuracy'].append(metrics[name]['accuracy'])
+                per_class[name]['pixels'].append(gt_pixels[i])
+        # Weighted averages and stds
+        class_stats = {}
+        all_prec, all_rec, all_f1, all_iou, all_acc, all_pix = [], [], [], [], [], []
+        for name in class_names:
+            arr_prec = np.array(per_class[name]['precision'])
+            arr_rec = np.array(per_class[name]['recall'])
+            arr_f1 = np.array(per_class[name]['f1'])
+            arr_iou = np.array(per_class[name]['iou'])
+            arr_acc = np.array(per_class[name]['accuracy'])
+            arr_pix = np.array(per_class[name]['pixels'])
+            class_stats[name] = {
+                'mean_precision': np.average(arr_prec, weights=arr_pix) if arr_pix.sum() else 0,
+                'std_precision': np.std(arr_prec),
+                'mean_recall': np.average(arr_rec, weights=arr_pix) if arr_pix.sum() else 0,
+                'std_recall': np.std(arr_rec),
+                'mean_f1': np.average(arr_f1, weights=arr_pix) if arr_pix.sum() else 0,
+                'std_f1': np.std(arr_f1),
+                'mean_iou': np.average(arr_iou, weights=arr_pix) if arr_pix.sum() else 0,
+                'std_iou': np.std(arr_iou),
+                'mean_accuracy': np.average(arr_acc, weights=arr_pix) if arr_pix.sum() else 0,
+                'std_accuracy': np.std(arr_acc),
+                'mean_pixels': np.mean(arr_pix),
+                'std_pixels': np.std(arr_pix)
+            }
+            all_prec.extend(arr_prec * arr_pix)
+            all_rec.extend(arr_rec * arr_pix)
+            all_f1.extend(arr_f1 * arr_pix)
+            all_iou.extend(arr_iou * arr_pix)
+            all_acc.extend(arr_acc * arr_pix)
+            all_pix.extend(arr_pix)
+        # Overall weighted
+        total_pixels = np.sum([np.sum(per_class[name]['pixels']) for name in class_names])
+        overall = {
+            'precision': np.sum(all_prec) / np.sum(all_pix) if np.sum(all_pix) else 0,
+            'recall': np.sum(all_rec) / np.sum(all_pix) if np.sum(all_pix) else 0,
+            'f1': np.sum(all_f1) / np.sum(all_pix) if np.sum(all_pix) else 0,
+            'iou': np.sum(all_iou) / np.sum(all_pix) if np.sum(all_pix) else 0,
+            'accuracy': np.sum(all_acc) / np.sum(all_pix) if np.sum(all_pix) else 0,
+            'total_pixels': int(total_pixels)
+        }
+        return class_stats, overall
+
+    summary_file = os.path.join(output_dir, 'batch_summary.txt')
+    with open(summary_file, 'w') as f:
+        f.write("BATCH EVALUATION SUMMARY\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(f"Total files processed: {len(results)}\n")
+        f.write(f"Total pixels processed: {sum(r['before']['height']*r['before']['width'] for r in results):,}\n")
+        if min_cluster_size > 0:
+            f.write(f"Cluster filtering applied: minimum size {min_cluster_size}\n")
+        f.write("\n")
+        # BEFORE FILTERING TABLE
+        f.write("PER-CLASS STATISTICS (Before Filtering):\n")
+        f.write("-" * 120 + "\n")
+        f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+        f.write("-" * 120 + "\n")
+        class_stats, overall = aggregate_table(results, 'before')
         for class_name, class_stat in class_stats.items():
             f.write(f"{class_name:<20} "
                    f"{class_stat['mean_precision']:<8.3f}±{class_stat['std_precision']:<6.3f} "
@@ -365,34 +397,57 @@ def create_batch_summary(results, output_dir, min_cluster_size=0):
                    f"{int(class_stat['mean_pixels']):<8,}±{int(class_stat['std_pixels']):<6,}\n")
         f.write("-" * 120 + "\n")
         f.write(f"{'OVERALL (Weighted)':<20} "
-               f"{overall_weighted_stats['weighted_precision']:<8.3f}     "
-               f"{overall_weighted_stats['weighted_recall']:<8.3f}     "
-               f"{overall_weighted_stats['weighted_f1']:<8.3f}     "
-               f"{overall_weighted_stats['weighted_iou']:<8.3f}     "
-               f"{overall_weighted_stats['weighted_accuracy']:<8.3f}     "
-               f"{stats['Total_Pixels_Processed']:<8,}\n")
+               f"{overall['precision']:<8.3f}     "
+               f"{overall['recall']:<8.3f}     "
+               f"{overall['f1']:<8.3f}     "
+               f"{overall['iou']:<8.3f}     "
+               f"{overall['accuracy']:<8.3f}     "
+               f"{overall['total_pixels']:<8,}\n")
         f.write("-" * 120 + "\n\n")
-        
+        # AFTER FILTERING TABLE
+        if min_cluster_size > 0:
+            f.write("PER-CLASS STATISTICS (After Filtering):\n")
+            f.write("-" * 120 + "\n")
+            f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+            f.write("-" * 120 + "\n")
+            class_stats, overall = aggregate_table(results, 'after')
+            for class_name, class_stat in class_stats.items():
+                f.write(f"{class_name:<20} "
+                       f"{class_stat['mean_precision']:<8.3f}±{class_stat['std_precision']:<6.3f} "
+                       f"{class_stat['mean_recall']:<8.3f}±{class_stat['std_recall']:<6.3f} "
+                       f"{class_stat['mean_f1']:<8.3f}±{class_stat['std_f1']:<6.3f} "
+                       f"{class_stat['mean_iou']:<8.3f}±{class_stat['std_iou']:<6.3f} "
+                       f"{class_stat['mean_accuracy']:<8.3f}±{class_stat['std_accuracy']:<6.3f} "
+                       f"{int(class_stat['mean_pixels']):<8,}±{int(class_stat['std_pixels']):<6,}\n")
+            f.write("-" * 120 + "\n")
+            f.write(f"{'OVERALL (Weighted)':<20} "
+                   f"{overall['precision']:<8.3f}     "
+                   f"{overall['recall']:<8.3f}     "
+                   f"{overall['f1']:<8.3f}     "
+                   f"{overall['iou']:<8.3f}     "
+                   f"{overall['accuracy']:<8.3f}     "
+                   f"{overall['total_pixels']:<8,}\n")
+            f.write("-" * 120 + "\n\n")
+        # DETAILED RESULTS
         f.write("DETAILED RESULTS:\n")
         f.write("-" * 30 + "\n")
-        for _, row in df.iterrows():
-            f.write(f"{row['Filename']}: Accuracy={row['Overall_Accuracy']:.3f}, "
-                   f"Precision={row['Overall_Precision']:.3f}, "
-                   f"Recall={row['Overall_Recall']:.3f}, "
-                   f"F1={row['Overall_F1']:.3f}, "
-                   f"IoU={row['Overall_IoU']:.3f}\n")
-    
-    # Save CSV
-    csv_file = os.path.join(output_dir, 'batch_results.csv')
-    df.to_csv(csv_file, index=False)
-    
+        for result in results:
+            f.write(f"{result['filename']}\n")
     print(f"📊 Summary saved to: {summary_file}")
-    print(f"📊 CSV results saved to: {csv_file}")
     
-    # Print summary to console
-    print(f"\n📈 BATCH SUMMARY:")
-    print(f"   Files processed: {stats['Total_Files']}")
-    print(f"   Total pixels processed: {stats['Total_Pixels_Processed']:,}")
+    # Create combined pixelwise CSV
+    all_pixelwise_data = []
+    for result in results:
+        if 'pixelwise_data' in result:
+            all_pixelwise_data.append(result['pixelwise_data'])
+    
+    if all_pixelwise_data:
+        combined_pixelwise_df = pd.concat(all_pixelwise_data, ignore_index=True)
+        pixelwise_csv_path = os.path.join(output_dir, 'pixelwise_predictions.csv')
+        combined_pixelwise_df.to_csv(pixelwise_csv_path, index=False)
+        print(f"📊 Combined pixelwise data saved to: {pixelwise_csv_path}")
+        print(f"   Total pixels: {len(combined_pixelwise_df):,}")
+        print(f"   Images: {len(results)}")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate segmentation predictions for all H5 files in a folder')
