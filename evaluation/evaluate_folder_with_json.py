@@ -8,12 +8,11 @@ import numpy as np
 from pathlib import Path
 
 # Import functions from the original script
-from evaluate_segmentation_json import (
+from evaluate_image_with_json import (
     calculate_metrics,
     create_mask_from_json,
     find_matching_annotation,
     filter_small_clusters,
-    evaluate_segmentation_json
 )
 
 def process_h5_folder(json_path, h5_folder_path, output_dir="batch_evaluation_results", 
@@ -131,7 +130,7 @@ def process_single_h5_file(json_data, h5_path, output_dir, generate_chart=True, 
             mapped_prediction[max_class_indices == i] = target_class
         original_mapped_prediction = mapped_prediction.copy()
 
-        # --- BEFORE FILTERING ---
+        # --- BEFORE SMALL CLUSTER FILTERING ---
         before_metrics = {}
         before_gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
         for i in range(num_classes):
@@ -139,7 +138,7 @@ def process_single_h5_file(json_data, h5_path, output_dir, generate_chart=True, 
             pred_mask_class = (original_mapped_prediction == i)
             before_metrics[class_names[i]] = calculate_metrics(gt_mask_class, pred_mask_class)
 
-        # --- AFTER FILTERING ---
+        # --- AFTER SMALL CLUSTER FILTERING ---
         if min_cluster_size > 0:
             filtered_prediction = filter_small_clusters(original_mapped_prediction, min_cluster_size)
         else:
@@ -224,12 +223,12 @@ def save_individual_results(result, output_dir):
         for class_name, metrics in before_metrics.items():
             gt_pixel_count = before_gt_pixels[list(before_metrics.keys()).index(class_name)]
             f.write(f"{class_name:<20} "
-                   f"{metrics['precision']:<8.3f}±0.000 "
-                   f"{metrics['recall']:<8.3f}±0.000 "
-                   f"{metrics['f1']:<8.3f}±0.000 "
-                   f"{metrics['iou']:<8.3f}±0.000 "
-                   f"{metrics['accuracy']:<8.3f}±0.000 "
-                   f"{gt_pixel_count:<8,}±0\n")
+                   f"{metrics['precision']:<8.3f}"
+                   f"{metrics['recall']:<8.3f}"
+                   f"{metrics['f1']:<8.3f}"
+                   f"{metrics['iou']:<8.3f}"
+                   f"{metrics['accuracy']:<8.3f}"
+                   f"{gt_pixel_count:<8,}\n")
         
         f.write("-" * 120 + "\n")
         f.write(f"{'OVERALL (Weighted)':<20} "
@@ -323,7 +322,7 @@ def create_batch_summary(results, output_dir, min_cluster_size=0):
         for result in results:
             metrics = result[key]['class_metrics']
             gt_pixels = result[key]['gt_pixel_counts']
-            for i, name in enumerate(class_names):
+            for i, name in enumerate(class_names): 
                 per_class[name]['precision'].append(metrics[name]['precision'])
                 per_class[name]['recall'].append(metrics[name]['recall'])
                 per_class[name]['f1'].append(metrics[name]['f1'])

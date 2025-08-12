@@ -7,7 +7,6 @@ import os
 import sys
 import argparse
 import json
-from itertools import permutations
 
 def calculate_metrics(gt_mask, pred_mask):
     """Calculate precision, recall, F1-score, and IoU for a class."""

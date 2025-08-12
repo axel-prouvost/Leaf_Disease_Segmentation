@@ -1,4 +1,106 @@
+# macOS system files
 .DS_Store
-env
-__pycache__
+
+# Python virtual environment
+env/
+venv/
+.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific files
 test.py
+
+# Evaluation results (large files and generated content)
+evaluation/evaluation_results/
+evaluation/results/
+evaluation/spatial/batch_evaluation_results/
+evaluation/spatial/json_evaluation_results/
+evaluation/spatial/GT/
+evaluation/spatial/h5 files/
+evaluation/spatial/images/
+evaluation/spatial/predictions/
+
+# Large data files
+*.h5
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.tif
+
+# Model files
+*.ilp
+*.model
+*.pkl
+*.joblib
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
