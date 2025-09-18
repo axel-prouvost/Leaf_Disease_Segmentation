@@ -55,8 +55,6 @@ def calculate_rust_metrics(df):
     # Calculer les métriques basées sur les surfaces prédites vs ground truth
     total_pred_rust = df['surfPred_rust'].sum()
     total_gt_rust = df['surfGT_rust'].sum()
-    total_pred_leaf = df['surfPred_leaf'].sum()
-    total_gt_leaf = df['surfGT_leaf'].sum()
     
     # Calculer l'intersection pour chaque échantillon
     intersection = np.minimum(df['surfPred_rust'], df['surfGT_rust'])
@@ -78,7 +76,8 @@ def calculate_rust_metrics(df):
     accuracy = total_correct / total_pixels if total_pixels > 0 else 0
     
     # F1-Score
-    f1 = 2 * (precision * accuracy) / (precision + accuracy) if (precision + accuracy) > 0 else 0
+    recall = total_intersection / total_gt_rust if total_gt_rust > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     
     # Surface Error (%): (surface prédite - surface GT) / surface GT * 100
     surface_error = ((total_pred_rust - total_gt_rust) / total_gt_rust) * 100 if total_gt_rust > 0 else 0
@@ -92,8 +91,6 @@ def calculate_pm_metrics(df):
     # Calculer les métriques basées sur les surfaces prédites vs ground truth
     total_pred_pm = df['surfPred_PM'].sum()
     total_gt_pm = df['surfGT_PM'].sum()
-    total_pred_leaf = df['surfPred_leaf'].sum()
-    total_gt_leaf = df['surfGT_leaf'].sum()
     
     # Calculer l'intersection pour chaque échantillon
     intersection = np.minimum(df['surfPred_PM'], df['surfGT_PM'])
@@ -115,7 +112,8 @@ def calculate_pm_metrics(df):
     accuracy = total_correct / total_pixels if total_pixels > 0 else 0
     
     # F1-Score
-    f1 = 2 * (precision * accuracy) / (precision + accuracy) if (precision + accuracy) > 0 else 0
+    recall = total_intersection / total_gt_pm if total_gt_pm > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     
     # Surface Error (%): (surface prédite - surface GT) / surface GT * 100
     surface_error = ((total_pred_pm - total_gt_pm) / total_gt_pm) * 100 if total_gt_pm > 0 else 0

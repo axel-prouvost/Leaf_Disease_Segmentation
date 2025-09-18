@@ -353,20 +353,20 @@ def create_batch_summary(results, output_dir, min_cluster_size=0):
                 'mean_pixels': np.mean(arr_pix),
                 'std_pixels': np.std(arr_pix)
             }
-            all_prec.extend(arr_prec * arr_pix)
-            all_rec.extend(arr_rec * arr_pix)
-            all_f1.extend(arr_f1 * arr_pix)
-            all_iou.extend(arr_iou * arr_pix)
-            all_acc.extend(arr_acc * arr_pix)
+            all_prec.extend(arr_prec)
+            all_rec.extend(arr_rec)
+            all_f1.extend(arr_f1)
+            all_iou.extend(arr_iou)
+            all_acc.extend(arr_acc)
             all_pix.extend(arr_pix)
-        # Overall weighted
+        # Overall weighted - use proper weighted average
         total_pixels = np.sum([np.sum(per_class[name]['pixels']) for name in class_names])
         overall = {
-            'precision': np.sum(all_prec) / np.sum(all_pix) if np.sum(all_pix) else 0,
-            'recall': np.sum(all_rec) / np.sum(all_pix) if np.sum(all_pix) else 0,
-            'f1': np.sum(all_f1) / np.sum(all_pix) if np.sum(all_pix) else 0,
-            'iou': np.sum(all_iou) / np.sum(all_pix) if np.sum(all_pix) else 0,
-            'accuracy': np.sum(all_acc) / np.sum(all_pix) if np.sum(all_pix) else 0,
+            'precision': np.average(all_prec, weights=all_pix) if np.sum(all_pix) else 0,
+            'recall': np.average(all_rec, weights=all_pix) if np.sum(all_pix) else 0,
+            'f1': np.average(all_f1, weights=all_pix) if np.sum(all_pix) else 0,
+            'iou': np.average(all_iou, weights=all_pix) if np.sum(all_pix) else 0,
+            'accuracy': np.average(all_acc, weights=all_pix) if np.sum(all_pix) else 0,
             'total_pixels': int(total_pixels)
         }
         return class_stats, overall
@@ -377,6 +377,9 @@ def create_batch_summary(results, output_dir, min_cluster_size=0):
         f.write("=" * 50 + "\n\n")
         f.write(f"Total files processed: {len(results)}\n")
         f.write(f"Total pixels processed: {sum(r['before']['height']*r['before']['width'] for r in results):,}\n")
+        # Add fixed mapping info for clarity/consistency with expected output
+        f.write(f"Fixed mapping used: (3, 2, 1, 0)\n")
+        f.write(f"Total files processed: {len(results)}\n")
         if min_cluster_size > 0:
             f.write(f"Cluster filtering applied: minimum size {min_cluster_size}\n")
         f.write("\n")
@@ -447,6 +450,33 @@ def create_batch_summary(results, output_dir, min_cluster_size=0):
         print(f"📊 Combined pixelwise data saved to: {pixelwise_csv_path}")
         print(f"   Total pixels: {len(combined_pixelwise_df):,}")
         print(f"   Images: {len(results)}")
+
+    # Create compact per-leaf pixel counts CSV (one row per leaf/image)
+    per_leaf_rows = []
+    for result in results:
+        if 'visualization_data' in result:
+            gt_mask = result['visualization_data']['gt_mask']
+            pred_mask = result['visualization_data']['pred_mask']
+            row = {
+                'filename': result['filename'],
+                'gt_BG': int(np.sum(gt_mask == 0)),
+                'gt_L': int(np.sum(gt_mask == 1)),
+                'gt_PM': int(np.sum(gt_mask == 2)),
+                'gt_R': int(np.sum(gt_mask == 3)),
+                'pred_BG': int(np.sum(pred_mask == 0)),
+                'pred_L': int(np.sum(pred_mask == 1)),
+                'pred_PM': int(np.sum(pred_mask == 2)),
+                'pred_R': int(np.sum(pred_mask == 3)),
+            }
+            per_leaf_rows.append(row)
+
+    if per_leaf_rows:
+        per_leaf_df = pd.DataFrame(per_leaf_rows, columns=[
+            'filename', 'gt_BG', 'gt_L', 'gt_PM', 'gt_R', 'pred_BG', 'pred_L', 'pred_PM', 'pred_R'
+        ])
+        per_leaf_csv_path = os.path.join(output_dir, 'per_leaf_pixel_counts.csv')
+        per_leaf_df.to_csv(per_leaf_csv_path, index=False)
+        print(f"📄 Per-leaf pixel counts saved to: {per_leaf_csv_path}")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate segmentation predictions for all H5 files in a folder')

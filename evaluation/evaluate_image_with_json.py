@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import os
-import sys
 import argparse
 import json
 
@@ -39,9 +38,17 @@ def calculate_metrics(gt_mask, pred_mask):
     }
 
 def create_mask_from_json(annotation_data, height, width):
-    """Create a mask from JSON annotation data."""
-    # Initialize mask with background (class 0)
-    mask = np.zeros((height, width), dtype=np.uint8)
+    """Create a mask from JSON annotation data using labels directly from JSON.
+    
+    Mapping:
+      BG/text -> 0 (Background)
+      EL/WL   -> 1 (Leaf)
+      PM      -> 2 (Powdery Mildew)
+      BR/YR/R -> 3 (Rust)
+    """
+    # Initialize mask with sentinel; unlabeled areas will become Background (class 0)
+    SENTINEL = 255
+    mask = np.full((height, width), SENTINEL, dtype=np.uint8)
     
     # Define class mapping based on the disease types
     class_mapping = {
@@ -49,46 +56,108 @@ def create_mask_from_json(annotation_data, height, width):
         'text': 0, # Text assimilated to Background
         'EL': 1,   # Early Leaf -> L (Medium Gray)
         'WL': 1,   # White Leaf -> L (Medium Gray)
+        'L': 1,    # Explicit Leaf label
+        'Leaf': 1, # Leaf spelled out
         'PM': 2,   # Powdery Mildew (Light Gray)
         'BR': 3,   # Brown Rust -> R (White)
         'YR': 3,   # Yellow Rust -> R (White)
         'R': 3     # Rust (White)
     }
     
-    # Process each region in the annotation
+    # Infer source annotation coordinate space to scale polygons to mask size
+    # VIA JSON often stores absolute pixel coordinates from the original image.
+    # When original image size is unknown, approximate by using the max coords
+    # observed across all regions for this image.
+    max_x_coord = 0
+    max_y_coord = 0
+    for region in annotation_data.get('regions', []):
+        shape_attrs = region.get('shape_attributes', {})
+        if shape_attrs.get('name') == 'polygon':
+            xs = shape_attrs.get('all_points_x', [])
+            ys = shape_attrs.get('all_points_y', [])
+            if len(xs) > 0:
+                max_x_coord = max(max_x_coord, max(xs))
+            if len(ys) > 0:
+                max_y_coord = max(max_y_coord, max(ys))
+
+    # Avoid zero division; if coords are already in-range, scales will be ~1
+    src_w = max_x_coord + 1 if max_x_coord > 0 else width
+    src_h = max_y_coord + 1 if max_y_coord > 0 else height
+    scale_x = float(width) / float(src_w)
+    scale_y = float(height) / float(src_h)
+
+    # Collect scaled polygons per class to enforce draw order: BG -> L -> PM -> R
+    class_to_polygons = {0: [], 1: [], 2: [], 3: []}
+
     for region in annotation_data.get('regions', []):
         region_attrs = region.get('region_attributes', {})
         disease_type = region_attrs.get('type', 'BG')
-        
-        # Get the class index
         class_idx = class_mapping.get(disease_type, 0)
-        
-        # Get polygon points
+
         shape_attrs = region.get('shape_attributes', {})
         if shape_attrs.get('name') == 'polygon':
             all_points_x = shape_attrs.get('all_points_x', [])
             all_points_y = shape_attrs.get('all_points_y', [])
-            
             if len(all_points_x) > 2 and len(all_points_y) > 2:
-                # Create polygon points
-                points = np.array([all_points_x, all_points_y]).T.astype(np.int32)
-                
-                # Fill the polygon with the class index
-                cv2.fillPoly(mask, [points], class_idx)
+                xs = np.array(all_points_x, dtype=np.float32) * scale_x
+                ys = np.array(all_points_y, dtype=np.float32) * scale_y
+                xs = np.clip(np.rint(xs), 0, width - 1).astype(np.int32)
+                ys = np.clip(np.rint(ys), 0, height - 1).astype(np.int32)
+                points = np.stack([xs, ys], axis=1)
+
+                # Heuristic: Only accept BG polygons that touch the image border.
+                # Interior BG polygons (not touching any border) are likely leaf areas mistakenly labeled as BG.
+                if class_idx == 0:
+                    touches_border = (
+                        (xs == 0).any() or (xs == width - 1).any() or
+                        (ys == 0).any() or (ys == height - 1).any()
+                    )
+                    if not touches_border:
+                        # Reinterpret interior BG as Leaf
+                        class_to_polygons[1].append(points)
+                        continue
+
+                class_to_polygons[class_idx].append(points)
+
+    # Draw in order so diseases override leaf if overlaps
+    for cls in [0, 1, 2, 3]:  # BG -> L -> PM -> R
+        for pts in class_to_polygons[cls]:
+            cv2.fillPoly(mask, [pts], cls)
+
+    # Any remaining unlabeled pixels default to Background (class 0)
+    mask[mask == SENTINEL] = 0
     
     return mask
 
 def find_matching_annotation(json_data, h5_filename):
     """Find the annotation that matches the H5 filename."""
-    # Extract base filename from H5 file (remove _lab_pred.h5)
-    base_name = h5_filename.replace('_lab_pred.h5', '')
-    
-    # Look for matching annotation in JSON
-    for image_id, image_data in json_data.get('_via_img_metadata', {}).items():
-        filename = image_data.get('filename', '')
-        if filename == f"{base_name}.png":
+    # Normalize the H5 filename to a base identifier without suffixes or extensions
+    # Examples:
+    #   PM_18_normal_pred.h5 -> PM_18
+    #   PM_18_pred.h5        -> PM_18
+    #   PM_18.h5             -> PM_18
+    name = os.path.basename(h5_filename)
+    if name.lower().endswith('.h5'):
+        name = name[:-3]
+    # Remove known prediction suffixes
+    for suffix in ['_normal_pred', '_pred', '_prediction']:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    h5_base = name
+
+    # Iterate JSON entries and compare on base name without extension
+    for _, image_data in json_data.get('_via_img_metadata', {}).items():
+        json_fname = image_data.get('filename', '')
+        # Strip common extensions if present in JSON filename
+        json_base, _ = os.path.splitext(json_fname)
+        # Some JSONs may already store names without extension; handle that too
+        if json_base == '' and json_fname:
+            json_base = json_fname
+        if json_base == h5_base:
             return image_data
-    
+
+    # No match found
     return None
 
 def filter_small_clusters(prediction, min_cluster_size):
@@ -188,7 +257,8 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
         
         # Get prediction segmentation
         max_class_indices = np.argmax(probabilities, axis=2)
-        max_probabilities = np.max(probabilities, axis=2)
+        # max_probabilities can be computed if needed; not used currently
+        # _ = np.max(probabilities, axis=2)
         
         # Get ground truth class distribution
         gt_class_counts = []
@@ -344,15 +414,15 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
         # Calculate overall metrics (BEFORE filtering) - weighted by pixel count
         original_accuracy = np.sum(original_mapped_prediction == gt_mask) / (height * width)
         
-        # Calculate weighted averages based on pixel counts
-        class_pixel_counts = [np.sum(original_mapped_prediction == i) for i in range(num_classes)]
-        total_pixels = sum(class_pixel_counts)
+        # Calculate weighted averages based on ground truth pixel counts
+        gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
+        total_pixels = sum(gt_pixel_counts)
         
-        overall_precision_before = np.average([metrics['precision'] for metrics in all_metrics_before.values()], weights=class_pixel_counts)
-        overall_recall_before = np.average([metrics['recall'] for metrics in all_metrics_before.values()], weights=class_pixel_counts)
-        overall_f1_before = np.average([metrics['f1'] for metrics in all_metrics_before.values()], weights=class_pixel_counts)
-        overall_iou_before = np.average([metrics['iou'] for metrics in all_metrics_before.values()], weights=class_pixel_counts)
-        overall_accuracy_before = original_accuracy
+        overall_precision_before = np.average([metrics['precision'] for metrics in all_metrics_before.values()], weights=gt_pixel_counts)
+        overall_recall_before = np.average([metrics['recall'] for metrics in all_metrics_before.values()], weights=gt_pixel_counts)
+        overall_f1_before = np.average([metrics['f1'] for metrics in all_metrics_before.values()], weights=gt_pixel_counts)
+        overall_iou_before = np.average([metrics['iou'] for metrics in all_metrics_before.values()], weights=gt_pixel_counts)
+        # overall_accuracy_before = original_accuracy  # Not used in output
         
         print(f"{'OVERALL':<15} {overall_precision_before:<10.3f} {overall_recall_before:<10.3f} {overall_f1_before:<10.3f} {overall_iou_before:<10.3f} {original_accuracy:<10.3f} {total_pixels:<10,}")
         
@@ -390,25 +460,20 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
             # Calculate overall metrics (AFTER filtering) - weighted by pixel count
             mapped_accuracy_normalized = mapped_accuracy / 100
             
-            # Calculate weighted averages based on pixel counts after filtering
-            class_pixel_counts_after = [np.sum(mapped_prediction == i) for i in range(num_classes)]
-            total_pixels_after = sum(class_pixel_counts_after)
+            # Calculate weighted averages based on ground truth pixel counts (same as before filtering)
+            gt_pixel_counts_after = [np.sum(gt_mask == i) for i in range(num_classes)]
+            total_pixels_after = sum(gt_pixel_counts_after)
             
-            overall_precision_after = np.average([metrics['precision'] for metrics in all_metrics_after.values()], weights=class_pixel_counts_after)
-            overall_recall_after = np.average([metrics['recall'] for metrics in all_metrics_after.values()], weights=class_pixel_counts_after)
-            overall_f1_after = np.average([metrics['f1'] for metrics in all_metrics_after.values()], weights=class_pixel_counts_after)
-            overall_iou_after = np.average([metrics['iou'] for metrics in all_metrics_after.values()], weights=class_pixel_counts_after)
-            overall_accuracy_after = mapped_accuracy_normalized
+            overall_precision_after = np.average([metrics['precision'] for metrics in all_metrics_after.values()], weights=gt_pixel_counts_after)
+            overall_recall_after = np.average([metrics['recall'] for metrics in all_metrics_after.values()], weights=gt_pixel_counts_after)
+            overall_f1_after = np.average([metrics['f1'] for metrics in all_metrics_after.values()], weights=gt_pixel_counts_after)
+            overall_iou_after = np.average([metrics['iou'] for metrics in all_metrics_after.values()], weights=gt_pixel_counts_after)
+            # overall_accuracy_after = mapped_accuracy_normalized  # Not used in output
             
             print(f"{'OVERALL':<15} {overall_precision_after:<10.3f} {overall_recall_after:<10.3f} {overall_f1_after:<10.3f} {overall_iou_after:<10.3f} {mapped_accuracy_normalized:<10.3f} {total_pixels_after:<10,}")
         else:
-            # If no filtering, use the before metrics as the main metrics
+            # If no filtering, reuse the before metrics as the main metrics
             all_metrics_after = all_metrics_before
-            overall_accuracy_after = overall_accuracy_before
-            overall_precision_after = overall_precision_before
-            overall_recall_after = overall_recall_before
-            overall_f1_after = overall_f1_before
-            overall_iou_after = overall_iou_before
         
         # Save metrics to file
         metrics_file = os.path.join(output_dir, 'json_metrics_table.txt')

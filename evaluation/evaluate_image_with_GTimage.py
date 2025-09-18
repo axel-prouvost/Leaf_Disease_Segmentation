@@ -240,12 +240,20 @@ def evaluate_segmentation(gt_path, h5_path, output_dir="evaluation_results", gen
         
         print("-" * 80)
         
-        # Calculate overall metrics
+        # Calculate overall metrics using weighted averages based on ground truth pixel counts
         overall_accuracy = best_accuracy / 100
-        overall_precision = np.mean([metrics['precision'] for metrics in all_metrics.values()])
-        overall_recall = np.mean([metrics['recall'] for metrics in all_metrics.values()])
-        overall_f1 = np.mean([metrics['f1'] for metrics in all_metrics.values()])
-        overall_iou = np.mean([metrics['iou'] for metrics in all_metrics.values()])
+        
+        # Get ground truth pixel counts for weighting
+        gt_pixel_counts = []
+        for i in range(num_classes):
+            gt_mask = np.all(gt_image_rgb == class_colors[i], axis=2)
+            gt_pixel_counts.append(np.sum(gt_mask))
+        
+        # Calculate weighted averages
+        overall_precision = np.average([metrics['precision'] for metrics in all_metrics.values()], weights=gt_pixel_counts)
+        overall_recall = np.average([metrics['recall'] for metrics in all_metrics.values()], weights=gt_pixel_counts)
+        overall_f1 = np.average([metrics['f1'] for metrics in all_metrics.values()], weights=gt_pixel_counts)
+        overall_iou = np.average([metrics['iou'] for metrics in all_metrics.values()], weights=gt_pixel_counts)
         
         print(f"{'OVERALL':<15} {overall_precision:<10.3f} {overall_recall:<10.3f} {overall_f1:<10.3f} {overall_iou:<10.3f} {overall_accuracy:<10.3f}")
         
