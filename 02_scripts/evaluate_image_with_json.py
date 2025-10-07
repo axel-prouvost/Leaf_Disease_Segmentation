@@ -301,11 +301,36 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
         # Calculate accuracy with fixed mapping
         mapped_accuracy = np.sum(mapped_prediction == gt_mask) / (height * width) * 100
         
-        # Calculate correlation
+        # Calculate correlation and counts
         mapped_counts = []
         for i in range(num_classes):
             mask = (mapped_prediction == i)
             mapped_counts.append(np.sum(mask))
+
+        # Counts before filtering (using original mapped prediction)
+        original_mapped_counts = []
+        for i in range(num_classes):
+            mask = (original_mapped_prediction == i)
+            original_mapped_counts.append(np.sum(mask))
+
+        # Surface Error per class and overall (BEFORE filtering)
+        # Surface Error = |Pred Area - GT Area| / GT Area
+        surface_error_before = []
+        for i in range(num_classes):
+            gt_area = gt_class_counts[i]
+            pred_area = original_mapped_counts[i]
+            denom = gt_area
+            se = abs(pred_area - gt_area) / denom if denom > 0 else 0.0
+            surface_error_before.append(se)
+        # Overall Surface Error BEFORE: sum_i |pred_i-gt_i| / sum_i gt_i
+        total_gt_area = sum(gt_class_counts)
+        total_pred_area_before = sum(original_mapped_counts)
+        se_num_before = 0
+        se_den_before = 0
+        for i in range(num_classes):
+            se_num_before += abs(original_mapped_counts[i] - gt_class_counts[i])
+            se_den_before += gt_class_counts[i]
+        overall_surface_error_before = (se_num_before / se_den_before) if se_den_before > 0 else 0.0
         
         best_correlation = np.corrcoef(gt_class_counts, mapped_counts)[0, 1]
         
@@ -389,7 +414,7 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
         
         print(f"\nPer-Class Metrics (with fixed mapping):")
         print("-" * 90)
-        print(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'Pixels':<10}")
+        print(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'SurfErr':<10} {'Pixels':<10}")
         print("-" * 90)
         
         all_metrics_before = {}
@@ -406,8 +431,9 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
             
             # Count pixels for this class
             pixel_count = np.sum(pred_mask_class)
+            se_val = surface_error_before[i]
             
-            print(f"{class_names[i]:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {pixel_count:<10,}")
+            print(f"{class_names[i]:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {se_val:<10.3f} {pixel_count:<10,}")
         
         print("-" * 90)
         
@@ -424,7 +450,7 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
         overall_iou_before = np.average([metrics['iou'] for metrics in all_metrics_before.values()], weights=gt_pixel_counts)
         # overall_accuracy_before = original_accuracy  # Not used in output
         
-        print(f"{'OVERALL':<15} {overall_precision_before:<10.3f} {overall_recall_before:<10.3f} {overall_f1_before:<10.3f} {overall_iou_before:<10.3f} {original_accuracy:<10.3f} {total_pixels:<10,}")
+        print(f"{'OVERALL':<15} {overall_precision_before:<10.3f} {overall_recall_before:<10.3f} {overall_f1_before:<10.3f} {overall_iou_before:<10.3f} {original_accuracy:<10.3f} {overall_surface_error_before:<10.3f} {total_pixels:<10,}")
         
         # Calculate metrics for each class (AFTER filtering)
         if min_cluster_size > 0:
@@ -435,10 +461,12 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
             
             print(f"\nPer-Class Metrics (with fixed mapping and cluster filtering):")
             print("-" * 90)
-            print(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'Pixels':<10}")
+            print(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'SurfErr':<10} {'Pixels':<10}")
             print("-" * 90)
             
             all_metrics_after = {}
+            # Surface Error per class and overall (AFTER filtering)
+            surface_error_after = []
             for i in range(num_classes):
                 # Get ground truth mask for this class
                 gt_mask_class = (gt_mask == i)
@@ -452,8 +480,14 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
                 
                 # Count pixels for this class
                 pixel_count = np.sum(pred_mask_class)
+                # Surface error for this class (GT denominator)
+                gt_area = gt_class_counts[i]
+                pred_area = mapped_counts[i]
+                denom = gt_area
+                se = abs(pred_area - gt_area) / denom if denom > 0 else 0.0
+                surface_error_after.append(se)
                 
-                print(f"{class_names[i]:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {pixel_count:<10,}")
+                print(f"{class_names[i]:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {se:<10.3f} {pixel_count:<10,}")
             
             print("-" * 90)
             
@@ -470,7 +504,15 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
             overall_iou_after = np.average([metrics['iou'] for metrics in all_metrics_after.values()], weights=gt_pixel_counts_after)
             # overall_accuracy_after = mapped_accuracy_normalized  # Not used in output
             
-            print(f"{'OVERALL':<15} {overall_precision_after:<10.3f} {overall_recall_after:<10.3f} {overall_f1_after:<10.3f} {overall_iou_after:<10.3f} {mapped_accuracy_normalized:<10.3f} {total_pixels_after:<10,}")
+            total_pred_area_after = sum(mapped_counts)
+            # Overall Surface Error AFTER: sum_i |pred_i-gt_i| / sum_i gt_i
+            se_num_after = 0
+            se_den_after = 0
+            for i in range(num_classes):
+                se_num_after += abs(mapped_counts[i] - gt_class_counts[i])
+                se_den_after += gt_class_counts[i]
+            overall_surface_error_after = (se_num_after / se_den_after) if se_den_after > 0 else 0.0
+            print(f"{'OVERALL':<15} {overall_precision_after:<10.3f} {overall_recall_after:<10.3f} {overall_f1_after:<10.3f} {overall_iou_after:<10.3f} {mapped_accuracy_normalized:<10.3f} {overall_surface_error_after:<10.3f} {total_pixels_after:<10,}")
         else:
             # If no filtering, reuse the before metrics as the main metrics
             all_metrics_after = all_metrics_before
@@ -495,7 +537,7 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
             # Write BEFORE filtering metrics
             f.write(f"\n=== METRICS BEFORE CLUSTER FILTERING ===\n")
             f.write("-" * 90 + "\n")
-            f.write(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'Pixels':<10}\n")
+            f.write(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'SurfErr':<10} {'Pixels':<10}\n")
             f.write("-" * 90 + "\n")
             
             for class_name, metrics in all_metrics_before.items():
@@ -503,16 +545,17 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
                 class_idx = list(class_names.values()).index(class_name)
                 pred_mask_class = (original_mapped_prediction == class_idx)
                 pixel_count = np.sum(pred_mask_class)
-                f.write(f"{class_name:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {pixel_count:<10,}\n")
+                se_val = surface_error_before[class_idx]
+                f.write(f"{class_name:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {se_val:<10.3f} {pixel_count:<10,}\n")
             
             f.write("-" * 90 + "\n")
-            f.write(f"{'OVERALL':<15} {overall_precision_before:<10.3f} {overall_recall_before:<10.3f} {overall_f1_before:<10.3f} {overall_iou_before:<10.3f} {original_accuracy:<10.3f} {total_pixels:<10,}\n")
+            f.write(f"{'OVERALL':<15} {overall_precision_before:<10.3f} {overall_recall_before:<10.3f} {overall_f1_before:<10.3f} {overall_iou_before:<10.3f} {original_accuracy:<10.3f} {overall_surface_error_before:<10.3f} {total_pixels:<10,}\n")
             
             # Write AFTER filtering metrics (if filtering was applied)
             if min_cluster_size > 0:
                 f.write(f"\n=== METRICS AFTER CLUSTER FILTERING ===\n")
                 f.write("-" * 90 + "\n")
-                f.write(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'Pixels':<10}\n")
+                f.write(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Accuracy':<10} {'SurfErr':<10} {'Pixels':<10}\n")
                 f.write("-" * 90 + "\n")
                 
                 for class_name, metrics in all_metrics_after.items():
@@ -520,10 +563,21 @@ def evaluate_segmentation_json(json_path, h5_path, output_dir="evaluation_result
                     class_idx = list(class_names.values()).index(class_name)
                     pred_mask_class = (mapped_prediction == class_idx)
                     pixel_count = np.sum(pred_mask_class)
-                    f.write(f"{class_name:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {pixel_count:<10,}\n")
+                    gt_area = gt_class_counts[class_idx]
+                    pred_area = mapped_counts[class_idx]
+                    denom = gt_area
+                    se_val = abs(pred_area - gt_area) / denom if denom > 0 else 0.0
+                    f.write(f"{class_name:<15} {metrics['precision']:<10.3f} {metrics['recall']:<10.3f} {metrics['f1']:<10.3f} {metrics['iou']:<10.3f} {metrics['accuracy']:<10.3f} {se_val:<10.3f} {pixel_count:<10,}\n")
                 
                 f.write("-" * 90 + "\n")
-                f.write(f"{'OVERALL':<15} {overall_precision_after:<10.3f} {overall_recall_after:<10.3f} {overall_f1_after:<10.3f} {overall_iou_after:<10.3f} {mapped_accuracy_normalized:<10.3f} {total_pixels_after:<10,}\n")
+                total_pred_area_after = sum(mapped_counts)
+                se_num_after = 0
+                se_den_after = 0
+                for i in range(num_classes):
+                    se_num_after += abs(mapped_counts[i] - gt_class_counts[i])
+                    se_den_after += gt_class_counts[i]
+                overall_surface_error_after = (se_num_after / se_den_after) if se_den_after > 0 else 0.0
+                f.write(f"{'OVERALL':<15} {overall_precision_after:<10.3f} {overall_recall_after:<10.3f} {overall_f1_after:<10.3f} {overall_iou_after:<10.3f} {mapped_accuracy_normalized:<10.3f} {overall_surface_error_after:<10.3f} {total_pixels_after:<10,}\n")
         
         print(f"\nResults saved to:")
         if generate_chart:

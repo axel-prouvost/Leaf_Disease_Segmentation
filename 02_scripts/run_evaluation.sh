@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# & "C:\Program Files\Git\bin\bash.exe" -lc "./02_scripts/run_evaluation.sh"
 
 set -euo pipefail
 

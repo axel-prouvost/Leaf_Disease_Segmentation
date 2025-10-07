@@ -133,22 +133,25 @@ def process_single_h5_file(json_data, h5_path, output_dir, generate_chart=True, 
         # --- BEFORE SMALL CLUSTER FILTERING ---
         before_metrics = {}
         before_gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
+        before_pred_pixel_counts = [np.sum(original_mapped_prediction == i) for i in range(num_classes)]
         for i in range(num_classes):
             gt_mask_class = (gt_mask == i)
             pred_mask_class = (original_mapped_prediction == i)
             before_metrics[class_names[i]] = calculate_metrics(gt_mask_class, pred_mask_class)
 
-        # --- AFTER SMALL CLUSTER FILTERING ---
+        # --- AFTER SMALL CLUSTER FILTERING --- (only compute/store if filtering is requested)
+        filtered_prediction = None
+        after_metrics = {}
+        after_gt_pixel_counts = []
+        after_pred_pixel_counts = []
         if min_cluster_size > 0:
             filtered_prediction = filter_small_clusters(original_mapped_prediction, min_cluster_size)
-        else:
-            filtered_prediction = original_mapped_prediction.copy()
-        after_metrics = {}
-        after_gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
-        for i in range(num_classes):
-            gt_mask_class = (gt_mask == i)
-            pred_mask_class = (filtered_prediction == i)
-            after_metrics[class_names[i]] = calculate_metrics(gt_mask_class, pred_mask_class)
+            after_gt_pixel_counts = [np.sum(gt_mask == i) for i in range(num_classes)]
+            after_pred_pixel_counts = [np.sum(filtered_prediction == i) for i in range(num_classes)]
+            for i in range(num_classes):
+                gt_mask_class = (gt_mask == i)
+                pred_mask_class = (filtered_prediction == i)
+                after_metrics[class_names[i]] = calculate_metrics(gt_mask_class, pred_mask_class)
 
         # Save both sets of metrics and GT pixel counts
         result = {
@@ -157,15 +160,19 @@ def process_single_h5_file(json_data, h5_path, output_dir, generate_chart=True, 
             'before': {
                 'class_metrics': before_metrics,
                 'gt_pixel_counts': before_gt_pixel_counts,
+                'pred_pixel_counts': before_pred_pixel_counts,
                 'height': height,
                 'width': width
             },
-            'after': {
-                'class_metrics': after_metrics,
-                'gt_pixel_counts': after_gt_pixel_counts,
-                'height': height,
-                'width': width
-            },
+            **({
+                'after': {
+                    'class_metrics': after_metrics,
+                    'gt_pixel_counts': after_gt_pixel_counts,
+                    'pred_pixel_counts': after_pred_pixel_counts,
+                    'height': height,
+                    'width': width
+                }
+            } if min_cluster_size > 0 else {}),
             'visualization_data': {
                 'gt_mask': gt_mask,
                 'pred_mask': filtered_prediction if min_cluster_size > 0 else original_mapped_prediction
@@ -204,11 +211,12 @@ def save_individual_results(result, output_dir):
         # Before filtering metrics
         f.write("BEFORE FILTERING:\n")
         f.write("-" * 120 + "\n")
-        f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+        f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'SurfErr':<15} {'Pixels':<15}\n")
         f.write("-" * 120 + "\n")
         
         before_metrics = result['before']['class_metrics']
         before_gt_pixels = result['before']['gt_pixel_counts']
+        before_pred_pixels = result['before']['pred_pixel_counts']
         total_before_pixels = sum(before_gt_pixels)
         
         # Calculate overall metrics for before filtering
@@ -219,15 +227,26 @@ def save_individual_results(result, output_dir):
             'iou': np.average([before_metrics[name]['iou'] for name in before_metrics.keys()], weights=before_gt_pixels),
             'accuracy': np.average([before_metrics[name]['accuracy'] for name in before_metrics.keys()], weights=before_gt_pixels)
         }
+        # Overall surface error (before) - aggregated across classes
+        se_num_before = 0
+        se_den_before = 0
+        for i in range(len(before_gt_pixels)):
+            se_num_before += abs(before_pred_pixels[i] - before_gt_pixels[i])
+            se_den_before += max(before_pred_pixels[i], before_gt_pixels[i])
+        overall_surface_error_before = (se_num_before / se_den_before) if se_den_before > 0 else 0.0
         
-        for class_name, metrics in before_metrics.items():
-            gt_pixel_count = before_gt_pixels[list(before_metrics.keys()).index(class_name)]
+        for idx, (class_name, metrics) in enumerate(before_metrics.items()):
+            gt_pixel_count = before_gt_pixels[idx]
+            pred_pixel_count = before_pred_pixels[idx]
+            denom = gt_pixel_count
+            surf_err = abs(pred_pixel_count - gt_pixel_count) / denom if denom > 0 else 0.0
             f.write(f"{class_name:<20} "
                    f"{metrics['precision']:<8.3f}"
                    f"{metrics['recall']:<8.3f}"
                    f"{metrics['f1']:<8.3f}"
                    f"{metrics['iou']:<8.3f}"
                    f"{metrics['accuracy']:<8.3f}"
+                   f"{surf_err:<8.3f}"
                    f"{gt_pixel_count:<8,}\n")
         
         f.write("-" * 120 + "\n")
@@ -237,18 +256,20 @@ def save_individual_results(result, output_dir):
                f"{overall_before['f1']:<8.3f}     "
                f"{overall_before['iou']:<8.3f}     "
                f"{overall_before['accuracy']:<8.3f}     "
+               f"{overall_surface_error_before:<8.3f}     "
                f"{total_before_pixels:<8,}\n")
         f.write("-" * 120 + "\n\n")
         
-        # After filtering metrics (if filtering was applied)
-        if 'after' in result:
+        # After filtering metrics (only when filtering was applied)
+        if 'after' in result and result['after'].get('class_metrics'):
             f.write("AFTER FILTERING:\n")
             f.write("-" * 120 + "\n")
-            f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+            f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'SurfErr':<15} {'Pixels':<15}\n")
             f.write("-" * 120 + "\n")
             
             after_metrics = result['after']['class_metrics']
             after_gt_pixels = result['after']['gt_pixel_counts']
+            after_pred_pixels = result['after']['pred_pixel_counts']
             total_after_pixels = sum(after_gt_pixels)
             
             # Calculate overall metrics for after filtering
@@ -259,16 +280,27 @@ def save_individual_results(result, output_dir):
                 'iou': np.average([after_metrics[name]['iou'] for name in after_metrics.keys()], weights=after_gt_pixels),
                 'accuracy': np.average([after_metrics[name]['accuracy'] for name in after_metrics.keys()], weights=after_gt_pixels)
             }
+            # Overall surface error (after) - aggregated across classes using GT denominator
+            se_num_after = 0
+            se_den_after = 0
+            for i in range(len(after_gt_pixels)):
+                se_num_after += abs(after_pred_pixels[i] - after_gt_pixels[i])
+                se_den_after += after_gt_pixels[i]
+            overall_surface_error_after = (se_num_after / se_den_after) if se_den_after > 0 else 0.0
             
-            for class_name, metrics in after_metrics.items():
-                gt_pixel_count = after_gt_pixels[list(after_metrics.keys()).index(class_name)]
+            for idx, (class_name, metrics) in enumerate(after_metrics.items()):
+                gt_pixel_count = after_gt_pixels[idx]
+                pred_pixel_count = after_pred_pixels[idx]
+                denom = max(pred_pixel_count, gt_pixel_count)
+                surf_err = abs(pred_pixel_count - gt_pixel_count) / denom if denom > 0 else 0.0
                 f.write(f"{class_name:<20} "
-                       f"{metrics['precision']:<8.3f}±0.000 "
-                       f"{metrics['recall']:<8.3f}±0.000 "
-                       f"{metrics['f1']:<8.3f}±0.000 "
-                       f"{metrics['iou']:<8.3f}±0.000 "
-                       f"{metrics['accuracy']:<8.3f}±0.000 "
-                       f"{gt_pixel_count:<8,}±0\n")
+                       f"{metrics['precision']:<8.3f}"
+                       f"{metrics['recall']:<8.3f}"
+                       f"{metrics['f1']:<8.3f}"
+                       f"{metrics['iou']:<8.3f}"
+                       f"{metrics['accuracy']:<8.3f}"
+                       f"{surf_err:<8.3f}"
+                       f"{gt_pixel_count:<8,}\n")
             
             f.write("-" * 120 + "\n")
             f.write(f"{'OVERALL (Weighted)':<20} "
@@ -277,6 +309,7 @@ def save_individual_results(result, output_dir):
                    f"{overall_after['f1']:<8.3f}     "
                    f"{overall_after['iou']:<8.3f}     "
                    f"{overall_after['accuracy']:<8.3f}     "
+                   f"{overall_surface_error_after:<8.3f}     "
                    f"{total_after_pixels:<8,}\n")
             f.write("-" * 120 + "\n\n")
     
@@ -318,10 +351,11 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
     class_names = ["BG (Dark Gray)", "L (Medium Gray)", "PM (Light Gray)", "R (White)"]
     def aggregate_table(results, key):
         # key: 'before' or 'after'
-        per_class = {name: {'precision': [], 'recall': [], 'f1': [], 'iou': [], 'accuracy': [], 'pixels': []} for name in class_names}
+        per_class = {name: {'precision': [], 'recall': [], 'f1': [], 'iou': [], 'accuracy': [], 'pixels': [], 'surferr': []} for name in class_names}
         for result in results:
             metrics = result[key]['class_metrics']
             gt_pixels = result[key]['gt_pixel_counts']
+            pred_pixels = result[key]['pred_pixel_counts']
             for i, name in enumerate(class_names): 
                 per_class[name]['precision'].append(metrics[name]['precision'])
                 per_class[name]['recall'].append(metrics[name]['recall'])
@@ -329,9 +363,17 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
                 per_class[name]['iou'].append(metrics[name]['iou'])
                 per_class[name]['accuracy'].append(metrics[name]['accuracy'])
                 per_class[name]['pixels'].append(gt_pixels[i])
+                # Per-image per-class surface error
+                gt_area = gt_pixels[i]
+                pred_area = pred_pixels[i]
+                denom = gt_area
+                se = abs(pred_area - gt_area) / denom if denom > 0 else 0.0
+                per_class[name]['surferr'].append(se)
         # Weighted averages and stds
         class_stats = {}
         all_prec, all_rec, all_f1, all_iou, all_acc, all_pix = [], [], [], [], [], []
+        total_gt_sum = 0
+        total_pred_sum = 0
         for name in class_names:
             arr_prec = np.array(per_class[name]['precision'])
             arr_rec = np.array(per_class[name]['recall'])
@@ -339,6 +381,7 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
             arr_iou = np.array(per_class[name]['iou'])
             arr_acc = np.array(per_class[name]['accuracy'])
             arr_pix = np.array(per_class[name]['pixels'])
+            arr_se = np.array(per_class[name]['surferr'])
             class_stats[name] = {
                 'mean_precision': np.average(arr_prec, weights=arr_pix) if arr_pix.sum() else 0,
                 'std_precision': np.std(arr_prec),
@@ -350,6 +393,8 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
                 'std_iou': np.std(arr_iou),
                 'mean_accuracy': np.average(arr_acc, weights=arr_pix) if arr_pix.sum() else 0,
                 'std_accuracy': np.std(arr_acc),
+                'mean_surferr': float(np.mean(arr_se)) if arr_se.size else 0.0,
+                'std_surferr': float(np.std(arr_se)) if arr_se.size else 0.0,
                 'mean_pixels': np.mean(arr_pix),
                 'std_pixels': np.std(arr_pix)
             }
@@ -359,15 +404,35 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
             all_iou.extend(arr_iou)
             all_acc.extend(arr_acc)
             all_pix.extend(arr_pix)
+            total_gt_sum += arr_pix.sum()
+            # For overall pred sum, recompute from results aggregation
+        # Compute overall pred sum across results
+        if results:
+            if key == 'before':
+                total_pred_sum = sum(sum(r[key]['pred_pixel_counts']) for r in results)
+                total_gt_sum = sum(sum(r[key]['gt_pixel_counts']) for r in results)
+            else:
+                total_pred_sum = sum(sum(r[key]['pred_pixel_counts']) for r in results)
+                total_gt_sum = sum(sum(r[key]['gt_pixel_counts']) for r in results)
         # Overall weighted - use proper weighted average
         total_pixels = np.sum([np.sum(per_class[name]['pixels']) for name in class_names])
+        # For batch overall surface error, average the per-image overall surface error
+        # computed as sum_i |pred_i-gt_i| / sum_i Gi
+        overall_surface_errors = []
+        for r in results:
+            preds = r[key]['pred_pixel_counts']
+            gts = r[key]['gt_pixel_counts']
+            se_num = sum(abs(int(preds[i]) - int(gts[i])) for i in range(len(gts)))
+            se_den = sum(int(gts[i]) for i in range(len(gts)))
+            overall_surface_errors.append((se_num / se_den) if se_den > 0 else 0.0)
         overall = {
             'precision': np.average(all_prec, weights=all_pix) if np.sum(all_pix) else 0,
             'recall': np.average(all_rec, weights=all_pix) if np.sum(all_pix) else 0,
             'f1': np.average(all_f1, weights=all_pix) if np.sum(all_pix) else 0,
             'iou': np.average(all_iou, weights=all_pix) if np.sum(all_pix) else 0,
             'accuracy': np.average(all_acc, weights=all_pix) if np.sum(all_pix) else 0,
-            'total_pixels': int(total_pixels)
+            'total_pixels': int(total_pixels),
+            'surface_error': float(np.mean(overall_surface_errors)) if overall_surface_errors else 0.0
         }
         return class_stats, overall
 
@@ -386,7 +451,7 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
         # BEFORE FILTERING TABLE
         f.write("PER-CLASS STATISTICS (Before Filtering):\n")
         f.write("-" * 120 + "\n")
-        f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+        f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'SurfErr':<15} {'Pixels':<15}\n")
         f.write("-" * 120 + "\n")
         class_stats, overall = aggregate_table(results, 'before')
         for class_name, class_stat in class_stats.items():
@@ -396,6 +461,7 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
                    f"{class_stat['mean_f1']:<8.3f}±{class_stat['std_f1']:<6.3f} "
                    f"{class_stat['mean_iou']:<8.3f}±{class_stat['std_iou']:<6.3f} "
                    f"{class_stat['mean_accuracy']:<8.3f}±{class_stat['std_accuracy']:<6.3f} "
+                   f"{class_stat['mean_surferr']:<8.3f}±{class_stat['std_surferr']:<6.3f} "
                    f"{int(class_stat['mean_pixels']):<8,}±{int(class_stat['std_pixels']):<6,}\n")
         f.write("-" * 120 + "\n")
         f.write(f"{'OVERALL (Weighted)':<20} "
@@ -404,13 +470,14 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
                f"{overall['f1']:<8.3f}     "
                f"{overall['iou']:<8.3f}     "
                f"{overall['accuracy']:<8.3f}     "
+               f"{overall['surface_error']:<8.3f}     "
                f"{overall['total_pixels']:<8,}\n")
         f.write("-" * 120 + "\n\n")
         # AFTER FILTERING TABLE
         if min_cluster_size > 0:
             f.write("PER-CLASS STATISTICS (After Filtering):\n")
             f.write("-" * 120 + "\n")
-            f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'Pixels':<15}\n")
+            f.write(f"{'Class':<20} {'Precision':<15} {'Recall':<15} {'F1-Score':<15} {'IoU':<15} {'Accuracy':<15} {'SurfErr':<15} {'Pixels':<15}\n")
             f.write("-" * 120 + "\n")
             class_stats, overall = aggregate_table(results, 'after')
             for class_name, class_stat in class_stats.items():
@@ -420,6 +487,7 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
                        f"{class_stat['mean_f1']:<8.3f}±{class_stat['std_f1']:<6.3f} "
                        f"{class_stat['mean_iou']:<8.3f}±{class_stat['std_iou']:<6.3f} "
                        f"{class_stat['mean_accuracy']:<8.3f}±{class_stat['std_accuracy']:<6.3f} "
+                       f"{class_stat['mean_surferr']:<8.3f}±{class_stat['std_surferr']:<6.3f} "
                        f"{int(class_stat['mean_pixels']):<8,}±{int(class_stat['std_pixels']):<6,}\n")
             f.write("-" * 120 + "\n")
             f.write(f"{'OVERALL (Weighted)':<20} "
@@ -428,6 +496,7 @@ def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise
                    f"{overall['f1']:<8.3f}     "
                    f"{overall['iou']:<8.3f}     "
                    f"{overall['accuracy']:<8.3f}     "
+                   f"{overall['surface_error']:<8.3f}     "
                    f"{overall['total_pixels']:<8,}\n")
             f.write("-" * 120 + "\n\n")
         # DETAILED RESULTS
