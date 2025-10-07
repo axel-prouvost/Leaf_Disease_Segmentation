@@ -75,8 +75,8 @@ venv.bak/
 test.py
 
 # Util scripts
-02_scripts\tmp_remove_pred_suffix.py
-02_scripts\tmp_top5_R_by_pixels.py
+02_scripts/tmp_remove_pred_suffix.py
+02_scripts/tmp_top5_R_by_pixels.py
 
 # Large data files
 *.h5
