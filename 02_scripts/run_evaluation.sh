@@ -12,9 +12,9 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 # Path to annotations JSON file
 JSON_PATH="$REPO_ROOT/01_labels/annotations_49.ordered.json"
 # Path to folder containing .h5 prediction files
-H5_FOLDER="$REPO_ROOT/BGR/results/15/h5_predictions"
+H5_FOLDER="$REPO_ROOT/LAB/results/10/h5_predictions"
 # Output directory for evaluation results
-OUTPUT_DIR="$REPO_ROOT/BGR/results/15/prediction_analysis"
+OUTPUT_DIR="$REPO_ROOT/LAB/results/10/prediction_analysis"
 # Minimum cluster size to keep (0 = no filtering)
 MIN_CLUSTER_SIZE="0"
 # Toggle features
