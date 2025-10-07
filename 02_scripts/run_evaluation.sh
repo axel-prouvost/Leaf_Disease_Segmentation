@@ -12,9 +12,9 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 # Path to annotations JSON file
 JSON_PATH="$REPO_ROOT/01_labels/annotations_49.ordered.json"
 # Path to folder containing .h5 prediction files
-H5_FOLDER="$REPO_ROOT/HLS/results/5/h5_predictions"
+H5_FOLDER="$REPO_ROOT/BGR/results/15/h5_predictions"
 # Output directory for evaluation results
-OUTPUT_DIR="$REPO_ROOT/HLS/results/5/prediction_analysis"
+OUTPUT_DIR="$REPO_ROOT/BGR/results/15/prediction_analysis"
 # Minimum cluster size to keep (0 = no filtering)
 MIN_CLUSTER_SIZE="0"
 # Toggle features
@@ -190,6 +190,11 @@ if [ -z "$CSV_PATH" ]; then
     echo "       You can also pass --csv <path> to specify it explicitly." >&2
     exit 1
   fi
+fi
+
+# Clean up legacy duplicate graph from older runs
+if [ -f "$DETECT_DIR/surface_regression_analysis_non_uniform.png" ]; then
+  rm -f "$DETECT_DIR/surface_regression_analysis_non_uniform.png" || true
 fi
 
 # For Windows python, convert CSV path to Windows form

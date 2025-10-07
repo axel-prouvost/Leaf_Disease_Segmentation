@@ -74,20 +74,18 @@ venv.bak/
 # Project specific files
 test.py
 
-# Evaluation results (large files and generated content)
-evaluation/evaluation_results/
-evaluation/results/
-evaluation/spatial/batch_evaluation_results/
-evaluation/spatial/json_evaluation_results/
-evaluation/spatial/GT/
-evaluation/spatial/h5 files/
-evaluation/spatial/images/
-evaluation/spatial/predictions/
+# Util scripts
+02_scripts\tmp_remove_pred_suffix.py
+02_scripts\tmp_top5_R_by_pixels.py
 
 # Large data files
 *.h5
+# Ignore all CSVs except surface_analysis_results.csv
 *.csv
+!surface_analysis_results.csv
+# Ignore all PNGs except surface_regression_analysis.png
 *.png
+!surface_regression_analysis.png
 *.jpg
 *.jpeg
 *.tiff
