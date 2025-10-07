@@ -1,6 +1,9 @@
 # macOS system files
 .DS_Store
 
+# Ignore all HDF5 files
+*.h5
+
 # Python virtual environment
 env/
 venv/

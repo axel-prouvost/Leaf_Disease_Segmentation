@@ -16,7 +16,7 @@ from evaluate_image_with_json import (
 )
 
 def process_h5_folder(json_path, h5_folder_path, output_dir="batch_evaluation_results", 
-                     generate_chart=True, min_cluster_size=0, save_summary=True):
+                     generate_chart=True, min_cluster_size=0, save_summary=True, save_pixelwise=True):
     """Process all H5 files in a folder and generate batch evaluation results."""
     
     if not os.path.exists(json_path):
@@ -101,7 +101,7 @@ def process_h5_folder(json_path, h5_folder_path, output_dir="batch_evaluation_re
     print(f"Successfully processed: {successful_files}/{len(h5_files)} files")
     
     if results and save_summary:
-        create_batch_summary(results, output_dir, min_cluster_size)
+        create_batch_summary(results, output_dir, min_cluster_size, save_pixelwise)
 
 def process_single_h5_file(json_data, h5_path, output_dir, generate_chart=True, min_cluster_size=0):
     """Process a single H5 file and return results with before/after filtering metrics and GT pixel counts."""
@@ -312,7 +312,7 @@ def save_individual_results(result, output_dir):
         
         print(f"  📊 Visualization saved to: {vis_file}")
 
-def create_batch_summary(results, output_dir, min_cluster_size=0):
+def create_batch_summary(results, output_dir, min_cluster_size=0, save_pixelwise=True):
     """Create a summary of all batch results with before/after filtering tables using GT pixel counts."""
     import numpy as np
     class_names = ["BG (Dark Gray)", "L (Medium Gray)", "PM (Light Gray)", "R (White)"]
@@ -437,19 +437,19 @@ def create_batch_summary(results, output_dir, min_cluster_size=0):
             f.write(f"{result['filename']}\n")
     print(f"📊 Summary saved to: {summary_file}")
     
-    # Create combined pixelwise CSV
-    all_pixelwise_data = []
-    for result in results:
-        if 'pixelwise_data' in result:
-            all_pixelwise_data.append(result['pixelwise_data'])
-    
-    if all_pixelwise_data:
-        combined_pixelwise_df = pd.concat(all_pixelwise_data, ignore_index=True)
-        pixelwise_csv_path = os.path.join(output_dir, 'pixelwise_predictions.csv')
-        combined_pixelwise_df.to_csv(pixelwise_csv_path, index=False)
-        print(f"📊 Combined pixelwise data saved to: {pixelwise_csv_path}")
-        print(f"   Total pixels: {len(combined_pixelwise_df):,}")
-        print(f"   Images: {len(results)}")
+    # Create combined pixelwise CSV (optional)
+    if save_pixelwise:
+        all_pixelwise_data = []
+        for result in results:
+            if 'pixelwise_data' in result:
+                all_pixelwise_data.append(result['pixelwise_data'])
+        if all_pixelwise_data:
+            combined_pixelwise_df = pd.concat(all_pixelwise_data, ignore_index=True)
+            pixelwise_csv_path = os.path.join(output_dir, 'pixelwise_predictions.csv')
+            combined_pixelwise_df.to_csv(pixelwise_csv_path, index=False)
+            print(f"📊 Combined pixelwise data saved to: {pixelwise_csv_path}")
+            print(f"   Total pixels: {len(combined_pixelwise_df):,}")
+            print(f"   Images: {len(results)}")
 
     # Create compact per-leaf pixel counts CSV (one row per leaf/image)
     per_leaf_rows = []
@@ -490,11 +490,13 @@ def main():
                        help='Minimum size of isolated clusters to keep (default: 0 = no filtering)')
     parser.add_argument('--no-summary', action='store_true',
                        help='Disable batch summary generation')
+    parser.add_argument('--no-pixelwise', action='store_true',
+                       help='Skip generating heavy pixelwise_predictions.csv in the summary')
     
     args = parser.parse_args()
     
     process_h5_folder(args.json_path, args.h5_folder_path, args.output, 
-                     not args.no_chart, args.min_cluster_size, not args.no_summary)
+                     not args.no_chart, args.min_cluster_size, not args.no_summary, not args.no_pixelwise)
 
 if __name__ == "__main__":
     main() 

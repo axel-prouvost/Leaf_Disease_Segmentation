@@ -123,7 +123,7 @@ def load_and_process_data(csv_path):
         "or per-leaf long (filename,class,predicted_surface,gt_surface) or wide (pred_*, gt_*).".format(original_columns)
     )
 
-def create_regression_plots(surface_df):
+def create_regression_plots(surface_df, out_dir="."):
     """Create linear regression plots for each class"""
     # Compute percentages per leaf to plot % instead of raw pixels
     df = surface_df.copy()
@@ -214,9 +214,10 @@ def create_regression_plots(surface_df):
         print(f"  Number of leaves: {len(class_data)}")
         print()
     
+    import os
+    os.makedirs(out_dir, exist_ok=True)
     plt.tight_layout()
-    plt.savefig('surface_regression_analysis.png', dpi=300, bbox_inches='tight')
-    plt.savefig('surface_regression_analysis_non_uniform.png', dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(out_dir, 'surface_regression_analysis.png'), dpi=300, bbox_inches='tight')
     plt.show()
     
     return fig
@@ -225,6 +226,8 @@ def main():
     parser = argparse.ArgumentParser(description='Surface area regression analysis from pixelwise or per-leaf CSV.')
     parser.add_argument('--csv', dest='csv_path', type=str, default='final/pixelwise_predictions.csv',
                         help='Path to input CSV file (e.g., C:\\Users\\Axel\\Documents\\Mission_RD\\individual_pred\\normal_5_pred\\per_leaf_pixel_counts.csv)')
+    parser.add_argument('--out-dir', dest='out_dir', type=str, default='.',
+                        help='Directory to write plots and analysis CSV (default: current directory)')
     args = parser.parse_args()
     csv_path = args.csv_path
     
@@ -239,12 +242,15 @@ def main():
     print()
     
     # Create regression plots
-    create_regression_plots(surface_df)
+    create_regression_plots(surface_df, args.out_dir)
     
     # Save detailed results
-    surface_df.to_csv('surface_analysis_results.csv', index=False)
-    print("Detailed results saved to 'surface_analysis_results.csv'")
-    print("Plot saved as 'surface_regression_analysis.png'")
+    import os
+    os.makedirs(args.out_dir, exist_ok=True)
+    out_csv = os.path.join(args.out_dir, 'surface_analysis_results.csv')
+    surface_df.to_csv(out_csv, index=False)
+    print(f"Detailed results saved to '{out_csv}'")
+    print(f"Plot saved as '{os.path.join(args.out_dir, 'surface_regression_analysis.png')}'")
 
 if __name__ == "__main__":
     main() 
